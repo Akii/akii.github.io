@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<!--[if IE 8]> <html lang="en" class="ie8"> <![endif]-->
+<!--[if !IE]><!-->
+<html lang="en">
+    <!--<![endif]-->
+    <head>
+	      <meta charset="utf-8" />
+	      <title>Boring Haskell | Eventsourced aggregates in Haskell</title>
+	      <meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport" />
+	      
+	      <meta content="Philipp Maier" name="author" />
+	      
+	      
+	      <meta content="Introduction to projections and event sourcing aggregates in Haskell. First I'll give a brief implementation of projections using `foldl` along with an example. After that, I explain my approach of using a simple Monad transformer stack to implement aggregates and make actions composable." name="description" />
+	      
+
+	      <link href="http://fonts.googleapis.com/css?family=Open+Sans:300,400,600,700" rel="stylesheet" />
+	      <link href="../assets/plugins/bootstrap/css/bootstrap.min.css" rel="stylesheet" />
+	      <link href="../assets/plugins/font-awesome/css/font-awesome.min.css" rel="stylesheet" />
+	      <link href="../assets/css/animate.min.css" rel="stylesheet" />
+	      <link href="../assets/css/style.min.css" rel="stylesheet" />
+	      <link href="../assets/css/style-responsive.min.css" rel="stylesheet" />
+	      <link href="../assets/css/theme/blue.css" id="theme" rel="stylesheet" />
+    </head>
+    <body>
+        <div id="header" class="header navbar navbar-default navbar-fixed-top">
+	          <div class="container">
+		            <div class="navbar-header">
+			              <button type="button" class="navbar-toggle collapsed" data-toggle="collapse" data-target="#header-navbar">
+				                <span class="icon-bar"></span>
+				                <span class="icon-bar"></span>
+				                <span class="icon-bar"></span>
+			              </button>
+			              <a href="../" class="navbar-brand">
+				                <span class="brand-logo" style="border: none;">
+					                  <img src="../assets/img/HaskellLogoStyPreview-1.png" width="24" height="24" />
+				                </span>
+				                <span class="brand-text">Boring Haskell</span>
+			              </a>
+		            </div>
+		            <div class="collapse navbar-collapse" id="header-navbar">
+			              <ul class="nav navbar-nav navbar-right">
+				                <li class="dropdown">
+					                  <a href="../">HOME</a>
+				                </li>
+                        <!--
+				                     <li><a href="/about.html">ABOUT ME</a></li>
+				                     <li><a href="/contact.html">CONTACT</a></li>
+                           -->
+				                <li><a href="../archive.html">ARCHIVE</a></li>
+			              </ul>
+		            </div>
+	          </div>
+        </div>
+
+        
+
+        <div id="content" class="content">
+	          <div class="container">
+		            <div class="row row-space-30">
+			              <div class="col-md-9">
+				                <h1>Eventsourced aggregates in Haskell</h1>
+<div class="post-by">
+    Posted by Philipp Maier <span class="divider">|</span> June  4, 2017 <span class="divider">|</span> Event Sourcing, Haskell, Domain-Driven Design
+</div>
+
+<div class="section-container">
+    <h2 id="introduction">Introduction</h2>
+<p>First of all, welcome. This is boring Haskell, so if you’re looking for exciting Haskell this might not be the right blog. I consider myself a beginner Haskell programmer that has reached productivity level. I also do mostly “business” stuff, Domain-Driven Design and sending around domain events.</p>
+<p>In this first post I’ll be digging into eventsourced aggregates in Haskell. If you are unfamiliar with event sourcing, you might want to get a quick introduction <a href="https://docs.microsoft.com/en-us/azure/architecture/patterns/event-sourcing">here</a>.</p>
+<p>It basically means that instead of persisting some state like “Johns account balance is 100 €” you keep track of the changes to Johns account “First he deposited 125 €, then withdrew 25 €”. Aggregates protect invariants like “John can only withdraw 25 € if he actually has enough money on his account”. There is obviously <em>a lot</em> more to it, but for the purpose of this blog post this is all I care about.</p>
+<p>At first I will introduce projections (aka folds) that are used to derive state from event streams. Then I will show one possible implementation of aggregates using a Monad transformer stack.</p>
+<p>I will try to provide enough examples so that no previous knowledge is required. There is a comment section below in case of questions.</p>
+<h2 id="projections">Projections</h2>
+<p>The technical core of event sourcing is deriving state from a series of domain events. In event sourcing terms this is referred to as “projection” or “projecting state”. Although one can argue that this term is heavily overloaded, I will use it as I think it’s the most common term.</p>
+<p>Projections are ubiquitous in all eventsourced applications. Some serve as read models where others serve as state for validating invariants.</p>
+<p>They can be expressed as a fold. Here’s the (simplified) type signature for <code>foldl</code>:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">foldl<span class="ot"> ::</span> (state <span class="ot">-&gt;</span> event <span class="ot">-&gt;</span> state) <span class="ot">-&gt;</span> state <span class="ot">-&gt;</span> [event] <span class="ot">-&gt;</span> state</code></pre></div>
+<p>There are three parts to this function:</p>
+<ol style="list-style-type: decimal">
+<li><code>(state -&gt; event -&gt; state)</code> is a function that <em>applies</em> an event to a state</li>
+<li><code>state</code> is the initial state</li>
+<li><code>[event]</code> are the events to be applied to the initial state</li>
+</ol>
+<p>The outcome is the final state, after applying all the domain events. This is pretty basic and there is no magic. In “the real world”, projections will write into databases, websockets and do all sorts of side-effects, but at the base it’s just processing one event after the other.</p>
+<h2 id="example-list-of-registered-users">Example: List of registered users</h2>
+<p>In our fictional application we use event sourcing to keep track of our users.</p>
+<p>A user consists of a <code>UserName</code> as well as an <code>EmailAddress</code>. A user is either registered or archived. Archived users should no longer be visible in the system.</p>
+<p>Since we’re using event sourcing, the first thing to do is define the appropriate domain events. This is the information we’ll be saving:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">newtype</span> <span class="dt">UserName</span> <span class="fu">=</span> <span class="dt">UserName</span> <span class="dt">String</span>
+  <span class="kw">deriving</span> (<span class="dt">Eq</span>, <span class="dt">Ord</span>, <span class="dt">Show</span>)
+
+<span class="kw">newtype</span> <span class="dt">EmailAddress</span> <span class="fu">=</span> <span class="dt">EmailAddress</span> <span class="dt">String</span>
+  <span class="kw">deriving</span> (<span class="dt">Eq</span>, <span class="dt">Ord</span>, <span class="dt">Show</span>)
+
+<span class="kw">instance</span> <span class="dt">IsString</span> <span class="dt">UserName</span> <span class="kw">where</span>
+  fromString <span class="fu">=</span> <span class="dt">UserName</span>
+
+<span class="kw">instance</span> <span class="dt">IsString</span> <span class="dt">EmailAddress</span> <span class="kw">where</span>
+  fromString <span class="fu">=</span> <span class="dt">EmailAddress</span>
+
+<span class="kw">data</span> <span class="dt">UserEvent</span>
+  <span class="fu">=</span> <span class="dt">UserRegistered</span> <span class="dt">UserName</span> <span class="dt">EmailAddress</span>
+  <span class="fu">|</span> <span class="dt">UserEmailAddressChanged</span> <span class="dt">UserName</span> <span class="dt">EmailAddress</span>
+  <span class="fu">|</span> <span class="dt">UserArchived</span> <span class="dt">UserName</span>
+  <span class="kw">deriving</span> (<span class="dt">Show</span>)</code></pre></div>
+<p>In order to, for instance, have a list of non archived users a projection is required. As I said in the introduction, this can be accomplished by simply folding over the past events:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">type</span> <span class="dt">UserList</span> <span class="fu">=</span> <span class="dt">Map</span> <span class="dt">UserName</span> <span class="dt">User</span>
+
+<span class="kw">data</span> <span class="dt">User</span> <span class="fu">=</span> <span class="dt">User</span>
+  {<span class="ot"> userName     ::</span> <span class="dt">UserName</span>
+  ,<span class="ot"> emailAddress ::</span> <span class="dt">EmailAddress</span>
+  } <span class="kw">deriving</span> (<span class="dt">Eq</span>, <span class="dt">Show</span>)
+
+<span class="ot">projectActiveUsers ::</span> [<span class="dt">UserEvent</span>] <span class="ot">-&gt;</span> <span class="dt">UserList</span>
+projectActiveUsers <span class="fu">=</span> foldl' apply mempty
+
+<span class="ot">apply ::</span> <span class="dt">UserList</span> <span class="ot">-&gt;</span> <span class="dt">UserEvent</span> <span class="ot">-&gt;</span> <span class="dt">UserList</span>
+apply list ev <span class="fu">=</span>
+  <span class="kw">case</span> ev <span class="kw">of</span>
+    (<span class="dt">UserRegistered</span> username email) <span class="ot">-&gt;</span>
+      insert username (<span class="dt">User</span> username email) list
+    (<span class="dt">UserEmailAddressChanged</span> username email) <span class="ot">-&gt;</span>
+      adjust (\u <span class="ot">-&gt;</span> u {emailAddress <span class="fu">=</span> email}) username list
+    (<span class="dt">UserArchived</span> username) <span class="ot">-&gt;</span>
+      delete username list</code></pre></div>
+<p>If we run this example you’ll get the list of non archived users:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">main ::</span> <span class="dt">IO</span> ()
+main <span class="fu">=</span> <span class="kw">do</span>
+  <span class="kw">let</span> events <span class="fu">=</span> [<span class="dt">UserRegistered</span> <span class="st">&quot;user1&quot;</span> <span class="st">&quot;user@example.com&quot;</span>,
+                <span class="dt">UserRegistered</span> <span class="st">&quot;user2&quot;</span> <span class="st">&quot;user2@example.com&quot;</span>,
+                <span class="dt">UserEmailAddressChanged</span> <span class="st">&quot;user1&quot;</span> <span class="st">&quot;new@example.com&quot;</span>,
+                <span class="dt">UserRegistered</span> <span class="st">&quot;user3&quot;</span> <span class="st">&quot;user3@example.com&quot;</span>,
+                <span class="dt">UserArchived</span> <span class="st">&quot;user2&quot;</span>]
+  print (projectActiveUsers events)
+  
+<span class="co">-- fromList [</span>
+<span class="co">--   (&quot;user1&quot;,RegisteredUser {userName = &quot;user1&quot;, emailAddress = &quot;new@example.com&quot;}),</span>
+<span class="co">--   (&quot;user3&quot;,RegisteredUser {userName = &quot;user3&quot;, emailAddress = &quot;user3@example.com&quot;})]</span></code></pre></div>
+<p>As expected, the user 2 is no longer in the list and user 1’s email address has been changed.</p>
+<p>It is noteworthy that the default Monoid for map (left leaning union) is not the correct one to use here:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">projectActiveUsers [<span class="dt">UserRegistered</span> <span class="st">&quot;username&quot;</span> <span class="st">&quot;email@address.com&quot;</span>]
+  <span class="fu">&lt;&gt;</span> projectActiveUsers [<span class="dt">UserArchived</span> <span class="st">&quot;username&quot;</span>]</code></pre></div>
+<p>The expected result should be an empty map, however through union the event <code>UserArchived</code> is simply ignored. The correct Monoid to use would be right leaning union that keeps track of deletions.</p>
+<p>This is intentionally handwavy formulated as I am still investigating those properties. My current idea is having a morphism <code>ev -&gt; s</code> and a (correct) Semigroup defined for <code>s</code> could give you stuff like projecting state in parallel. Should I make any noteworthy discoveries I will write them down later.</p>
+<h2 id="eventsourced-aggregates">Eventsourced aggregates</h2>
+<p>Now that we have a basic understanding of projections, I can introduce aggregates: Producer of domain events and guardians of business invariants.</p>
+<p>The most basic example implementation of an aggregate is this:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">data</span> <span class="dt">UserError</span>
+  <span class="fu">=</span> <span class="dt">UserAlreadyRegistered</span>
+  <span class="fu">|</span> <span class="dt">EmailAddressExists</span>
+  <span class="kw">deriving</span> (<span class="dt">Show</span>)
+
+<span class="ot">registerUser ::</span> [<span class="dt">UserEvent</span>] <span class="ot">-&gt;</span> <span class="dt">UserName</span> <span class="ot">-&gt;</span> <span class="dt">EmailAddress</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">UserError</span> [<span class="dt">UserEvent</span>]
+registerUser evs uname email
+  <span class="fu">|</span> userExists  <span class="fu">=</span> <span class="dt">Left</span> <span class="dt">UserAlreadyRegistered</span>
+  <span class="fu">|</span> emailExists <span class="fu">=</span> <span class="dt">Left</span> <span class="dt">EmailAddressExists</span>
+  <span class="fu">|</span> otherwise   <span class="fu">=</span> <span class="dt">Right</span> [<span class="dt">UserRegistered</span> uname email]
+
+  <span class="kw">where</span>
+    users <span class="fu">=</span> projectActiveUsers evs
+    userExists <span class="fu">=</span> member uname users
+    emailExists <span class="fu">=</span> email <span class="ot">`elem`</span> fmap emailAddress (elems users)</code></pre></div>
+<p>So given the past events this function decides whether the user can actually be registered with the given <code>UserName</code> and <code>EmailAddress</code>. Failures are encoded in the sum type <code>UserError</code>. The only possible result in case of success is a list of new events <code>[UserEvent]</code>.</p>
+<p>In order to protect invariants, state needs to be derived. This is again a projection. I’m re-using the projection from earlier, but usually the states for guarding invariants are different ones than those that are used in the view.</p>
+<p>There are a few problems when doing this:</p>
+<ul>
+<li>The projection happens inside the function, and each of your aggregate actions must project the whole list of events again.</li>
+<li>Composition is tedious because of the return type (yes, I’m sure you could work around that).</li>
+</ul>
+<p>There is a bit more to aggregates. Each aggregate is versioned to prevent committing it to a stream that has been modified in the meantime. When committing an aggregate to a stream you have to also specify the version you loaded your aggregate with to prevent it from becoming inconsistent (see 1. for how an event store API might look like).</p>
+<h3 id="the-aggregateaction-monad-transformer-stack">The AggregateAction Monad transformer stack</h3>
+<p>All in all this screams Monad. More precisely: this screams <code>State</code> and <code>Except</code>. So I made this Monad stack and a data type for aggregates:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">     <span class="kw">data</span> <span class="dt">Aggregate</span> event state <span class="fu">=</span> <span class="dt">Aggregate</span>
+[<span class="dv">1</span>]    {<span class="ot"> aggState        ::</span> <span class="dt">Maybe</span> state
+[<span class="dv">1</span>]    ,<span class="ot"> aggInit         ::</span> event <span class="ot">-&gt;</span> state
+[<span class="dv">1</span>]    ,<span class="ot"> aggApply        ::</span> state <span class="ot">-&gt;</span> event <span class="ot">-&gt;</span> state
+[<span class="dv">2</span>]    ,<span class="ot"> aggVersion      ::</span> <span class="dt">Int</span>
+[<span class="dv">3</span>]    ,<span class="ot"> aggRaisedEvents ::</span> [event]
+       }
+
+[<span class="dv">4</span>]  <span class="kw">type</span> <span class="dt">AggregateAction</span> error event state a
+[<span class="dv">4</span>]    <span class="fu">=</span> <span class="dt">StateT</span> (<span class="dt">Aggregate</span> event state) (<span class="dt">Except</span> error) a</code></pre></div>
+<p>So let’s get over this step by step:</p>
+<ol style="list-style-type: decimal">
+<li><p>I embodied the projection into the data type. This hardly looks like the projection I introduced earlier, but when looking closer it is actually just split up. First of all, the state for a new aggregate is undefined since no events have been raised yet. Because of this, the state is optional and represented as <code>Maybe state</code>. In order to produce the initial state the first event is required. This is done with the function <code>aggInit</code>. Secondly, the <code>aggApply</code> function can operate on existing state and apply newly raised events to the aggregate state. This way the aggregate’s state is actually applied “on the fly” when composing!</p></li>
+<li><p>This is the aggregates version. It is increased as events are raised and when committing to the stream the original version can be calculated by subtracting the number of raised events.</p></li>
+<li><p>In case all our aggregate actions run through, this holds all newly raised events that will be committed to the event stream of the aggregate.</p></li>
+<li><p>The Monad stack. When running an <code>AggregateAction</code> the return type will be <code>Either error (Aggregate event state)</code>. If you are unfamiliar with this: it’s hardly of any relevance, following the code examples doesn’t require knowledge of Monad transformers.</p></li>
+</ol>
+<p>With this Monad stack and data type we can now implement the function <code>raise</code> in order to raise new domain events, as well as <code>runAggregateAction</code> to run the Monad stack:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">raise ::</span> event <span class="ot">-&gt;</span> <span class="dt">AggregateAction</span> error event state ()
+raise ev <span class="fu">=</span> <span class="kw">do</span>
+  <span class="co">-- Fetch the current aggregate from the State Monad</span>
+  agg <span class="ot">&lt;-</span> get
+
+  <span class="co">-- The aggregates state, `Maybe state`</span>
+  st <span class="ot">&lt;-</span> gets aggState
+
+  <span class="co">-- If there is no state yet `aggInit` will create it,</span>
+  <span class="co">-- otherwise `aggApply` is used to apply the event to the existing state</span>
+  <span class="kw">let</span> st' <span class="fu">=</span> maybe (aggInit agg) (aggApply agg) st ev
+
+  <span class="co">-- and then we just put the new state</span>
+  put <span class="fu">$</span> agg { aggState <span class="fu">=</span> <span class="dt">Just</span> st'
+            , aggVersion <span class="fu">=</span> aggVersion agg <span class="fu">+</span> <span class="dv">1</span>
+            , aggRaisedEvents <span class="fu">=</span> aggRaisedEvents agg <span class="fu">++</span> [ev] }
+
+runAggregateAction
+<span class="ot">  ::</span> <span class="dt">Aggregate</span> event state
+  <span class="ot">-&gt;</span> <span class="dt">AggregateAction</span> error event state a
+  <span class="ot">-&gt;</span> <span class="dt">Either</span> error (<span class="dt">Aggregate</span> event state)
+runAggregateAction agg action <span class="fu">=</span> runExcept (execStateT action agg)</code></pre></div>
+<p>Let’s look at this in action. First thing we can do is specialize the <code>AggregateAction</code> type:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">type</span> <span class="dt">RegistrationAction</span> a
+  <span class="fu">=</span> <span class="dt">AggregateAction</span> <span class="dt">UserError</span> <span class="dt">UserEvent</span> <span class="dt">UserList</span> a</code></pre></div>
+<p>After that we need to define an empty aggregate. This includes specifying the projection to be used.</p>
+<p>In my library I’ve written a function that takes <code>aggInit</code> and <code>aggApply</code> as arguments and returns an empty aggregate:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">newRegisterUserAgg ::</span> <span class="dt">Aggregate</span> <span class="dt">UserEvent</span> <span class="dt">UserList</span>
+newRegisterUserAgg <span class="fu">=</span> <span class="dt">Aggregate</span>
+  { aggState <span class="fu">=</span> <span class="dt">Nothing</span>
+  , aggInit <span class="fu">=</span> apply mempty        <span class="co">-- `apply` was defined in part 1</span>
+  , aggApply <span class="fu">=</span> apply
+  , aggVersion <span class="fu">=</span> <span class="dv">0</span>
+  , aggRaisedEvents <span class="fu">=</span> []
+  }</code></pre></div>
+<p>Now it’s time to implement the new <code>registerUser'</code> function:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">registerUser' ::</span> <span class="dt">UserName</span> <span class="ot">-&gt;</span> <span class="dt">EmailAddress</span> <span class="ot">-&gt;</span> <span class="dt">RegistrationAction</span> ()
+registerUser' uname email <span class="fu">=</span> <span class="kw">do</span>
+  mst <span class="ot">&lt;-</span> gets aggState
+
+  <span class="kw">case</span> mst <span class="kw">of</span>
+    <span class="dt">Nothing</span> <span class="ot">-&gt;</span> raise (<span class="dt">UserRegistered</span> uname email)
+    <span class="dt">Just</span> st <span class="ot">-&gt;</span> <span class="kw">do</span>
+      when (userExists st) (throwError <span class="dt">UserAlreadyRegistered</span>)
+      when (emailExists st) (throwError <span class="dt">EmailAddressExists</span>)
+      raise (<span class="dt">UserRegistered</span> uname email)
+
+  <span class="kw">where</span>
+    userExists <span class="fu">=</span> member uname
+    emailExists users <span class="fu">=</span> email <span class="ot">`elem`</span> fmap emailAddress (elems users)</code></pre></div>
+<p>Now let’s run that and see what happens:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">main' ::</span> <span class="dt">IO</span> ()
+main' <span class="fu">=</span> <span class="kw">do</span>
+  <span class="kw">let</span> result1 <span class="fu">=</span> runAggregateAction newRegisterUserAgg <span class="fu">$</span> <span class="kw">do</span>
+        registerUser' <span class="st">&quot;user1&quot;</span> <span class="st">&quot;user1@example.com&quot;</span>
+        registerUser' <span class="st">&quot;user2&quot;</span> <span class="st">&quot;user2@example.com&quot;</span>
+
+      result2 <span class="fu">=</span> runAggregateAction newRegisterUserAgg <span class="fu">$</span> <span class="kw">do</span>
+        registerUser' <span class="st">&quot;user1&quot;</span> <span class="st">&quot;user1@example.com&quot;</span>
+        registerUser' <span class="st">&quot;user2&quot;</span> <span class="st">&quot;user1@example.com&quot;</span>
+
+  putStrLn <span class="st">&quot;Result of 1 is:&quot;</span>
+  print (aggState <span class="fu">&lt;$&gt;</span> result1)        <span class="co">-- outputs Right (map of users as seen previously)</span>
+  print (aggRaisedEvents <span class="fu">&lt;$&gt;</span> result1) <span class="co">-- outputs Right (list with 2 raised events)</span>
+
+  putStrLn <span class="st">&quot;Result of 2 is:&quot;</span>
+  print (aggState <span class="fu">&lt;$&gt;</span> result2)        <span class="co">-- outputs Left EmailAddressExists</span></code></pre></div>
+<p>Let’s reflect on how this improved the original basic aggregate implementation:</p>
+<h4 id="procedural-code">Procedural code</h4>
+<p>Because of the <code>do</code> notation, the code becomes procedural. I guess one could argue about the readability - I personally think it makes “business code” more readable. First check this invariant then the other invariant and if that succeeds, raise an event.</p>
+<h4 id="the-argument-userevent-has-been-factored-out">The argument <code>[UserEvent]</code> has been factored out</h4>
+<p>The argument <code>[UserEvent]</code> is no longer required as it is part of the aggregate given when running the action. Compare the function signatures <code>registerUser</code> with <code>registerUser'</code>:</p>
+<ul>
+<li><code>[UserEvent] -&gt; UserName -&gt; EmailAddress -&gt; Either UserError [UserEvent]</code></li>
+<li><code>UserName -&gt; EmailAddress -&gt; RegistrationAction ()</code></li>
+</ul>
+<h4 id="actions-are-composable">Actions are composable</h4>
+<p>Not only is the <code>AggregateAction</code> decoupled from the actual projection, it also projects state “on the go”. This way you can compose multiple <code>AggregateAction</code>s and get a guarantee that your state is always up-to-date (this is actually used in “result2”).</p>
+<h4 id="automatic-handling-of-the-aggregate-version">Automatic handling of the aggregate version</h4>
+<p>The aggregates version is also now part of the aggregate data type and automatically increased with each raised event.</p>
+<h4 id="actions-have-a-return-type">Actions have a return type</h4>
+<p><code>AggregateAction</code>s have a return type that is independent from raised events. With this you can write reusable functions that work for any <code>AggregateAction</code>. I’ve some examples in the module TutorialLib that accompanies this blog post (see footnotes).</p>
+<h4 id="built-in-snapshotting">Built in snapshotting</h4>
+<p>Snapshotting is practically built in: <code>createSnapshot :: Aggregate event state -&gt; Maybe (Int, state)</code>.</p>
+<h2 id="summary">Summary</h2>
+<p>That’s a lot of cool stuff I’d say. Please note that is just one of many possible solutions. If you want to run the code you can download the file <a href="../raw/eventsourcing-in-haskell/Tutorial.hs">Tutorial.hs</a> and just load it up wit GHCi.</p>
+<p>At the end of the page is the comment section, should you have any questions. Please be kind as this is my first blog post in ages!</p>
+<p>There is still one issue left I want to address. This requires some “advanced” Haskell knowledge and I won’t be explaining what’s going on too much. So if you’re unable to follow along, just come back later!</p>
+<h2 id="appendix-error-detection-and-handling">Appendix: Error detection and handling</h2>
+<p>Back when I started with Haskell and looked at some solutions one thing always bugged me: how those solutions handled errors.</p>
+<p>So what happens if you have a corrupt stream for some reason? Or you have a bug in your projection? What about <code>aggInit</code> and it having to be a total function (right now this function must produce an initial value for every given event)?</p>
+<p>One could use exceptions but we can do better than that.</p>
+<p>Let’s look at how we can detect some errors when projecting state:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">projectActiveUsers' ::</span> [<span class="dt">UserEvent</span>] <span class="ot">-&gt;</span> <span class="dt">UserList</span>
+projectActiveUsers' <span class="fu">=</span> foldl' applySafe
+  <span class="kw">where</span>
+    applySafe list (<span class="dt">UserRegistered</span> uname email) <span class="fu">=</span>
+      <span class="kw">case</span> lookup uname list <span class="kw">of</span>
+        <span class="dt">Nothing</span> <span class="ot">-&gt;</span> insert uname (<span class="dt">User</span> uname email) list
+        <span class="dt">Just</span> u  <span class="ot">-&gt;</span> <span class="co">-- Now what</span></code></pre></div>
+<p>That’s an obvious contradiction. We’re getting a <code>UserRegistered</code> event but the user is already registered! So there must be an error in the stream then, or an bug in the projection. Usually errors like these are not handled in projections, however, when dealing with loading aggregates I think it would be better to detect this, rather than ignoring it.</p>
+<p>Then how can we handle this? One obvious way is to throw an exception. Chicken, err, I mean <code>error</code> out. We can also incorporate failure into the aggregates projection type signature. So let’s try that:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE FlexibleContexts #-}</span>
+<span class="ot">{-# LANGUAGE RankNTypes #-}</span>
+
+<span class="kw">data</span> <span class="dt">EventSourcingError</span> err
+  <span class="fu">=</span> <span class="dt">StateDerivingFailure</span> <span class="dt">Text</span>
+  <span class="fu">|</span> <span class="dt">UnknownState</span>
+  <span class="fu">|</span> <span class="dt">DomainError</span> err
+  <span class="kw">deriving</span> (<span class="dt">Show</span>)
+
+<span class="kw">type</span> <span class="dt">AggInit</span> err ev s
+  <span class="fu">=</span> forall m<span class="fu">.</span> <span class="dt">MonadError</span> (<span class="dt">EventSourcingError</span> err) m <span class="ot">=&gt;</span> ev <span class="ot">-&gt;</span> m s
+
+<span class="kw">type</span> <span class="dt">AggApply</span> err ev s
+  <span class="fu">=</span> forall m<span class="fu">.</span> <span class="dt">MonadError</span> (<span class="dt">EventSourcingError</span> err) m <span class="ot">=&gt;</span> s <span class="ot">-&gt;</span> ev <span class="ot">-&gt;</span> m s
+
+<span class="kw">data</span> <span class="dt">Aggregate</span> err ev s <span class="fu">=</span> <span class="dt">Aggregate</span>
+  {<span class="ot"> aggState        ::</span> <span class="dt">Maybe</span> s
+  ,<span class="ot"> aggInit         ::</span> <span class="dt">AggInit</span> err ev s
+  ,<span class="ot"> aggApply        ::</span> <span class="dt">AggApply</span> err ev s
+  ,<span class="ot"> aggVersion      ::</span> <span class="dt">Int</span>
+  ,<span class="ot"> aggRaisedEvents ::</span> [ev]
+  }
+
+<span class="kw">type</span> <span class="dt">AggregateAction</span> err ev s m a
+  <span class="fu">=</span> <span class="dt">StateT</span> (<span class="dt">Aggregate</span> err ev s) (<span class="dt">ExceptT</span> (<span class="dt">EventSourcingError</span> err) m) a</code></pre></div>
+<p>The projection of the aggregate can fail now.</p>
+<h3 id="example-failing-if-the-first-event-is-not-userregistered">Example: Failing if the first event is not UserRegistered</h3>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">newRegisterUserAgg ::</span> <span class="dt">Aggregate</span> <span class="dt">UserError</span> <span class="dt">UserEvent</span> <span class="dt">UserList</span>
+newRegisterUserAgg <span class="fu">=</span> <span class="dt">Aggregate</span>
+  { aggState <span class="fu">=</span> <span class="dt">Nothing</span>
+  , aggInit <span class="fu">=</span> insertFirstUser
+  , aggApply <span class="fu">=</span> (return <span class="fu">.</span>) <span class="fu">.</span> apply
+  , aggVersion <span class="fu">=</span> <span class="dv">0</span>
+  , aggRaisedEvents <span class="fu">=</span> []
+  }
+
+<span class="co">-- So the first event must always be UserRegistered</span>
+<span class="co">-- Both UserEmailAddressChanged and UserArchived make no sense</span>
+<span class="co">-- if no user was previously registered</span>
+<span class="ot">insertFirstUser ::</span> <span class="dt">AggInit</span> <span class="dt">UserError</span> <span class="dt">UserEvent</span> <span class="dt">UserList</span>
+insertFirstUser ev <span class="fu">=</span>
+  <span class="kw">case</span> ev <span class="kw">of</span>
+    (<span class="dt">UserRegistered</span> uname email) <span class="ot">-&gt;</span> return (M.insert uname (<span class="dt">User</span> uname email) mempty)
+    _                            <span class="ot">-&gt;</span>
+      throwError (<span class="dt">StateDerivingFailure</span> <span class="st">&quot;First event must be UserRegistered.&quot;</span>)</code></pre></div>
+<p>Now <code>insertFirstUser</code> actually fails in case the first event isn’t <code>UserRegistered</code>. Normally you’d now also add error detection to the <code>aggApply</code> function (I leave this as a task for the reader).</p>
+<p>Let’s run that and see what happens:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">main ::</span> <span class="dt">IO</span> ()
+main <span class="fu">=</span> <span class="kw">do</span>
+  result1 <span class="ot">&lt;-</span> runAggregateAction newRegisterUserAgg
+               (load [<span class="dt">UserRegistered</span> <span class="st">&quot;user1&quot;</span> <span class="st">&quot;user1@example.com&quot;</span>,
+                      <span class="dt">UserRegistered</span> <span class="st">&quot;user2&quot;</span> <span class="st">&quot;user2@example.com&quot;</span>])
+
+  result2 <span class="ot">&lt;-</span> runAggregateAction newRegisterUserAgg
+               (load [<span class="dt">UserEmailAddressChanged</span> <span class="st">&quot;user1&quot;</span> <span class="st">&quot;changed@example.com&quot;</span>])
+
+  <span class="co">-- Right (Map with two users in it)</span>
+  print (aggState <span class="fu">&lt;$&gt;</span> result1)
+  
+  <span class="co">-- Left (StateDerivingFailure &quot;First event must be UserRegistered.&quot;)</span>
+  print (aggState <span class="fu">&lt;$&gt;</span> result2)</code></pre></div>
+<p>In my opinion, this is a better way to deal with errors than simply ignoring them or throwing exceptions.</p>
+<p>If you want to run that code download the files <a href="../raw/eventsourcing-in-haskell/TutorialError.hs">TutorialError.hs</a> and <a href="../raw/eventsourcing-in-haskell/TutorialLib.hs">TutorialLib.hs</a>.</p>
+<hr />
+<ol style="list-style-type: decimal">
+<li><a href="http://docs.geteventstore.com/dotnet-api/4.0.0/optimistic-concurrency-and-idempotence/" class="uri">http://docs.geteventstore.com/dotnet-api/4.0.0/optimistic-concurrency-and-idempotence/</a></li>
+<li><a href="../raw/eventsourcing-in-haskell/Tutorial.hs">Tutorial.hs</a></li>
+<li><a href="../raw/eventsourcing-in-haskell/TutorialError.hs">TutorialError.hs</a></li>
+<li><a href="../raw/eventsourcing-in-haskell/TutorialLib.hs">TutorialLib.hs</a></li>
+</ol>
+</div>
+
+
+<div class="section-container">
+    <h4 class="section-title"><span>All Comments</span></h4>
+    <div id="disqus_thread"></div>
+</div>
+<script>
+    var disqus_config = function () {
+        this.page.url = window.location.protocol + "//" + window.location.host + "/posts/2017-06-04-eventsourcing-in-haskell.html";
+        this.page.identifier = "post-1";
+    };
+    (function() {
+        var d = document, s = d.createElement('script');
+        s.src = 'https://boring-haskell.disqus.com/embed.js';
+        s.setAttribute('data-timestamp', +new Date());
+        (d.head || d.body).appendChild(s);
+    })();
+</script>
+
+			              </div>
+			              <div class="col-md-3">
+                        <!--
+				                <div class="section-container">
+					                  <h4 class="section-title"><span>Recent Posts</span></h4>
+					                  <ul class="sidebar-recent-post">
+						                    <li>
+							                      <div class="info">
+								                        <h4 class="title"><a href="#">Will be shown as soon as I set up Hakyll correctly.</a></h4>
+								                        <div class="date">not now</div>
+							                      </div>
+						                    </li>
+					                  </ul>
+				                </div>
+                        -->
+				                <div class="section-container">
+					                  <h4 class="section-title"><span>Follow me</span></h4>
+					                  <ul class="sidebar-social-list">
+						                    <li><a href="https://twitter.com/AkiiZedd"><i class="fa fa-twitter"></i></a></li>
+						                    <li><a href="https://github.com/Akii"><i class="fa fa-github"></i></a></li>
+						                    <li><a href="https://www.xing.com/profile/Philipp_Maier65"><i class="fa fa-xing"></i></a></li>
+					                  </ul>
+				                </div>
+			              </div>
+		            </div>
+	          </div>
+        </div>
+
+        <div id="footer-copyright" class="footer-copyright">
+	          <div class="container">
+		            &copy; 2017 Philipp Maier
+		            <span class="pull-right">Site proudly generated by <a href="http://jaspervdj.be/hakyll">Hakyll</a></span>
+	          </div>
+        </div>
+
+        <script src="../assets/plugins/jquery/jquery-1.9.1.min.js"></script>
+        <script src="../assets/plugins/jquery/jquery-migrate-1.1.0.min.js"></script>
+        <script src="../assets/plugins/bootstrap/js/bootstrap.min.js"></script>
+        <!--[if lt IE 9]>
+            <script src="/assets/crossbrowserjs/html5shiv.js"></script>
+            <script src="/assets/crossbrowserjs/respond.min.js"></script>
+            <script src="/assets/crossbrowserjs/excanvas.min.js"></script>
+        <![endif]-->
+        <script src="../assets/plugins/jquery-cookie/jquery.cookie.js"></script>
+        <script src="../assets/js/apps.min.js"></script>
+
+        <script>
+	       
