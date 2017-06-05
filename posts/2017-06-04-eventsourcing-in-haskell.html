@@ -281,7 +281,7 @@ main' <span class="fu">=</span> <span class="kw">do</span>
 <p>One could use exceptions but we can do better than that.</p>
 <p>Let’s look at how we can detect some errors when projecting state:</p>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">projectActiveUsers' ::</span> [<span class="dt">UserEvent</span>] <span class="ot">-&gt;</span> <span class="dt">UserList</span>
-projectActiveUsers' <span class="fu">=</span> foldl' applySafe
+projectActiveUsers' <span class="fu">=</span> foldl' applySafe mempty
   <span class="kw">where</span>
     applySafe list (<span class="dt">UserRegistered</span> uname email) <span class="fu">=</span>
       <span class="kw">case</span> lookup uname list <span class="kw">of</span>
