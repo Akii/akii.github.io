@@ -228,14 +228,11 @@ newRegisterUserAgg <span class="fu">=</span> <span class="dt">Aggregate</span>
 <p>Now it’s time to implement the new <code>registerUser'</code> function:</p>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">registerUser' ::</span> <span class="dt">UserName</span> <span class="ot">-&gt;</span> <span class="dt">EmailAddress</span> <span class="ot">-&gt;</span> <span class="dt">RegistrationAction</span> ()
 registerUser' uname email <span class="fu">=</span> <span class="kw">do</span>
-  mst <span class="ot">&lt;-</span> gets aggState
+  st <span class="ot">&lt;-</span> gets (fromMaybe mempty <span class="fu">.</span> aggState)
 
-  <span class="kw">case</span> mst <span class="kw">of</span>
-    <span class="dt">Nothing</span> <span class="ot">-&gt;</span> raise (<span class="dt">UserRegistered</span> uname email)
-    <span class="dt">Just</span> st <span class="ot">-&gt;</span> <span class="kw">do</span>
-      when (userExists st) (throwError <span class="dt">UserAlreadyRegistered</span>)
-      when (emailExists st) (throwError <span class="dt">EmailAddressExists</span>)
-      raise (<span class="dt">UserRegistered</span> uname email)
+  when (userExists st) (throwError <span class="dt">UserAlreadyRegistered</span>)
+  when (emailExists st) (throwError <span class="dt">EmailAddressExists</span>)
+  raise (<span class="dt">UserRegistered</span> uname email)
 
   <span class="kw">where</span>
     userExists <span class="fu">=</span> member uname

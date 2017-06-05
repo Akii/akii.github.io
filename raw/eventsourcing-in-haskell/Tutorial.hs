@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}module Tutorial where import Control.Monad.Except import Control.Monad.State import Data.List (foldl')
 import           Data.Map             (Map, adjust, delete, elems, insert,
                                        member)
+import           Data.Maybe           (fromMaybe)
 import           Data.String
 
 --------------------------------------------------------
@@ -37,7 +38,7 @@ projectActiveUsers = foldl' apply mempty apply::UserList -> UserEvent -> UserLis
 
   -- and then we just put the new state
   put $ agg { aggState = Just st' , aggVersion = aggVersion agg + 1 , aggRaisedEvents = aggRaisedEvents agg ++ [ev]}runAggregateAction::Aggregate event state -> AggregateAction error event state a -> Either error (Aggregate event state) runAggregateAction agg action = runExcept (execStateT action agg) type RegistrationAction a = AggregateAction UserError UserEvent UserList a newRegisterUserAgg::Aggregate UserEvent UserList newRegisterUserAgg = Aggregate{aggState = Nothing , aggInit = apply mempty , aggApply = apply , aggVersion = 0 , aggRaisedEvents = []}registerUser' :: UserName -> EmailAddress -> RegistrationAction ()
-registerUser' uname email = do mst <- gets aggState case mst of Nothing -> raise (UserRegistered uname email) Just st -> do when (userExists st) (throwError UserAlreadyRegistered) when (emailExists st) (throwError EmailAddressExists) raise (UserRegistered uname email) where userExists = member uname emailExists users = email `elem` fmap emailAddress (elems users) main' :: IO ()
+registerUser' uname email = do st <- gets (fromMaybe mempty . aggState) when (userExists st) (throwError UserAlreadyRegistered) when (emailExists st) (throwError EmailAddressExists) raise (UserRegistered uname email) where userExists = member uname emailExists users = email `elem` fmap emailAddress (elems users) main' :: IO ()
 main' = do let result1 = runAggregateAction newRegisterUserAgg $ do registerUser' "user1" "user1@example.com"
         registerUser' "user2" "user2@example.com" result2 = runAggregateAction newRegisterUserAgg $ do registerUser' "user1" "user1@example.com"
         registerUser' "user2" "user1@example.com" putStrLn "Result of 1 is:" print (aggState <$> result1) print (aggRaisedEvents <$> result1) putStrLn "Result of 2 is:" print (aggState <$> result2) 
