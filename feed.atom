@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
     <title>Boring Haskell</title>
-    <link href="http://blog.akii.de/atom.xml" rel="self" />
+    <link href="http://blog.akii.de/feed.atom" rel="self" />
     <link href="http://blog.akii.de" />
-    <id>http://blog.akii.de/atom.xml</id>
+    <id>http://blog.akii.de/feed.atom</id>
     <author>
         <name>Philipp Maier</name>
         <email>@AkiiZedd</email>
