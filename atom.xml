@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+    <title>Boring Haskell</title>
+    <link href="http://blog.akii.de/atom.xml" rel="self" />
+    <link href="http://blog.akii.de" />
+    <id>http://blog.akii.de/atom.xml</id>
+    <author>
+        <name>Philipp Maier</name>
+        <email>@AkiiZedd</email>
+    </author>
+    <updated>2017-06-04T00:00:00Z</updated>
+    <entry>
+    <title>Eventsourced aggregates in Haskell</title>
+    <link href="http://blog.akii.de/posts/2017-06-04-eventsourcing-in-haskell.html" />
+    <id>http://blog.akii.de/posts/2017-06-04-eventsourcing-in-haskell.html</id>
+    <published>2017-06-04T00:00:00Z</published>
+    <updated>2017-06-04T00:00:00Z</updated>
+    <summary type="html"><![CDATA[Introduction to projections and event sourcing aggregates in Haskell. First I'll give a brief implementation of projections using `foldl` along with an example. After that, I explain my approach of using a simple Monad transformer stack to implement aggregates and make actions composable.]]></summary>
+</entry>
+
+</feed>
