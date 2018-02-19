@@ -1,4 +1,28 @@
-{-# LANGUAGE FlexibleContexts #-}{-# LANGUAGE RankNTypes #-}module TutorialLib ( Aggregate(..) , AggregateAction , EventSourcingError(..) , AggInit , AggApply , mkAggregate , runAggregateAction , getAS , getsAS , raise , load , createSnapshot , loadSnapshot , clearRaisedEvents -- * re-exports , throwError ) where import Control.Monad.Except (ExceptT, MonadError, runExceptT, throwError) import Control.Monad.State (StateT, execStateT, get, gets, modify',
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE RankNTypes            #-}
+
+module TutorialLib
+  ( Aggregate(..)
+  , AggregateAction
+  , EventSourcingError(..)
+  , AggInit
+  , AggApply
+  , mkAggregate
+  , runAggregateAction
+  , getAS
+  , getsAS
+  , raise
+  , load
+  , createSnapshot
+  , loadSnapshot
+  , clearRaisedEvents
+  -- * re-exports
+  , throwError
+  ) where
+
+import           Control.Monad.Except (ExceptT, MonadError, runExceptT,
+                                       throwError)
+import           Control.Monad.State  (StateT, execStateT, get, gets, modify',
                                        put)
 import           Data.Text            (Text)
 
@@ -40,7 +64,9 @@ raise :: Monad m => ev -> AggregateAction err ev s m ()
 raise ev = do
   agg <- get
   st <- gets aggState
-  st' <- maybe (aggInit agg) (aggApply agg) st ev put $ agg{aggState = Just st'
+  st' <- maybe (aggInit agg) (aggApply agg) st ev
+
+  put $ agg { aggState = Just st'
             , aggVersion = aggVersion agg + 1
             , aggRaisedEvents = aggRaisedEvents agg ++ [ev] }
 
@@ -60,4 +86,9 @@ createSnapshot = do
   return (version, st)
 
 loadSnapshot :: Monad m => (Int, s) -> AggregateAction err ev s m ()
-loadSnapshot (version, st) = modify' $ \agg -> agg{aggState = Just st , aggVersion = version}clearRaisedEvents::Monad m => AggregateAction err ev s m () clearRaisedEvents = modify' $ \agg -> agg { aggRaisedEvents = [] }
+loadSnapshot (version, st) = modify' $ \agg ->
+  agg { aggState  = Just st
+      , aggVersion = version }
+
+clearRaisedEvents :: Monad m => AggregateAction err ev s m ()
+clearRaisedEvents = modify' $ \agg -> agg { aggRaisedEvents = [] }

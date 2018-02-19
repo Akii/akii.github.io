@@ -8,8 +8,16 @@
         <name>Philipp Maier</name>
         <email>@AkiiZedd</email>
     </author>
-    <updated>2017-06-04T00:00:00Z</updated>
+    <updated>2018-02-19T00:00:00Z</updated>
     <entry>
+    <title>Implementing an efficient GeoIP lookup using STM and Async (Part 1)</title>
+    <link href="http://blog.akii.de/posts/2018-02-19-geoip-lookup-part-1.html" />
+    <id>http://blog.akii.de/posts/2018-02-19-geoip-lookup-part-1.html</id>
+    <published>2018-02-19T00:00:00Z</published>
+    <updated>2018-02-19T00:00:00Z</updated>
+    <summary type="html"><![CDATA[One of my first private projects I wrote with Haskell involved fetching GeoIP information from a remote service. Now, roughly 1.5 years later, I want to come back to that implementation and reflect on it.]]></summary>
+</entry>
+<entry>
     <title>Eventsourced aggregates in Haskell</title>
     <link href="http://blog.akii.de/posts/2017-06-04-eventsourcing-in-haskell.html" />
     <id>http://blog.akii.de/posts/2017-06-04-eventsourcing-in-haskell.html</id>

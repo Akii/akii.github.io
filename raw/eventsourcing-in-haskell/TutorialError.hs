@@ -1,4 +1,21 @@
-{-# LANGUAGE FlexibleContexts #-}{-# LANGUAGE OverloadedStrings #-}{-# LANGUAGE RankNTypes #-}module TutorialError where import Data.Map (Map) import qualified Data.Map as M import Data.String import TutorialLib -------------------------------------------------------- -- Part 2,5:Handling failures --------------------------------------------------------{-- projectActiveUsers' :: [UserEvent] -> UserList
+{-# LANGUAGE FlexibleContexts  #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes        #-}
+
+module TutorialError where
+
+import           Data.Map    (Map)
+import qualified Data.Map    as M
+import           Data.String
+
+import           TutorialLib
+
+--------------------------------------------------------
+-- Part 2,5: Handling failures
+--------------------------------------------------------
+
+{--
+projectActiveUsers' :: [UserEvent] -> UserList
 projectActiveUsers' = foldl' applySafe mempty
   where
     applySafe :: UserList -> UserEvent -> UserList

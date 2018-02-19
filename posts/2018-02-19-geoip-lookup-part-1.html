@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+	      <meta charset="utf-8" />
+	      <title>Boring Haskell | Implementing an efficient GeoIP lookup using STM and Async (Part 1)</title>
+	      <meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport" />
+	      
+	      <meta content="Philipp Maier" name="author" />
+	      
+	      
+	      <meta content="One of my first private projects I wrote with Haskell involved fetching GeoIP information from a remote service. Now, roughly 1.5 years later, I want to come back to that implementation and reflect on it." name="description" />
+	      
+
+        <link href="../feed.atom" rel="alternate" title="Boring Haskell" type="application/atom+xml">
+        <link href="../assets/img/haskelllogostypreview_1_XlE_icon.ico" rel="shortcut icon">
+        <link href="../posts/2018-02-19-geoip-lookup-part-1.html" rel="canonical">
+
+	      <link href="http://fonts.googleapis.com/css?family=Open+Sans:300,400,600,700" rel="stylesheet" />
+	      <link href="../assets/plugins/bootstrap/css/bootstrap.min.css" rel="stylesheet" />
+	      <link href="../assets/plugins/font-awesome/css/font-awesome.min.css" rel="stylesheet" />
+	      <link href="../assets/css/style.min.css" rel="stylesheet" />
+	      <link href="../assets/css/style-responsive.min.css" rel="stylesheet" />
+	      <link href="../assets/css/theme/blue.css" id="theme" rel="stylesheet" />
+        <script id="dsq-count-scr" src="//boring-haskell.disqus.com/count.js" async></script>
+
+        <style>
+         h1 { font-size: 38px; }
+         .section-container h2 { margin-bottom: 25px; }
+         .section-container h2:not(:first-of-type) { margin-top: 35px; }
+         .section-container { color: black; }
+         .section-container .sourceCode { margin: 25px 0; }
+        </style>
+    </head>
+    <body>
+        <div id="header" class="header navbar navbar-default navbar-fixed-top">
+	          <div class="container">
+		            <div class="navbar-header">
+			              <a href="../" class="navbar-brand">
+				                <span class="brand-logo" style="border: none;">
+					                  <img src="../assets/img/HaskellLogoStyPreview-1.png" width="24" height="24" />
+				                </span>
+				                <span class="brand-text">Boring Haskell</span>
+			              </a>
+		            </div>
+	          </div>
+        </div>
+
+        
+
+        <div id="content" class="content">
+	          <div class="container">
+		            <div class="row row-space-30">
+			              <div class="col-md-9">
+				                <h1>Implementing an efficient GeoIP lookup using STM and Async (Part 1)</h1>
+<div class="post-by">
+    Posted by Philipp Maier <span class="divider">|</span> February 19, 2018 <span class="divider">|</span> Haskell, STM, Async, Aeson
+</div>
+
+<div class="section-container">
+    <h2 id="introduction">Introduction</h2>
+<p>One of my first private projects I wrote with Haskell involved fetching GeoIP information from a remote service. Now, roughly 1.5 years later, I want to come back to that implementation and reflect on it. Back then it really excited me, so I thought I should share this experience in a blog post.</p>
+<p>Since this blog is explicitly targeted at beginners, I will not just simply refactor and abstract my original implementation. I will implement the lookup from scratch. This will give you insight into how to implement this and, more importantly, what the thought process looks like.</p>
+<p>The goal is to implement a fast and efficient GeoIP lookup that can handle at least 50 lookups per second. The roadmap for that looks like this:</p>
+<ol style="list-style-type: decimal">
+<li>Implement quering the free REST GeoIP service <a href="http://freegeoip.net" target="_blank">freegeoip.net</a> to retrieve GeoIP information.</li>
+<li>Make it so that multiple worker threads are quering the service concurrently for speed.</li>
+<li>Introduce a cache to prevent quering the service for the same IPs multiple times.</li>
+<li>Abstract the GeoIP lookup to work for arbitrary IO actions.</li>
+</ol>
+<p>The following resources are accompanying this post:</p>
+<ul>
+<li>My original implementation: <a href="../raw/geoip-lookup/GeoIP.hs" target="_blank">GeoIP.hs</a>.</li>
+<li>A GitHub repository with the code to play around with: <a href="https://github.com/Akii/geoip-lookup" target="_blank">Akii/geoip-lookup</a>.</li>
+</ul>
+<h2 id="looking-up-geo-information-for-ipv4-addresses-code-srcchapter1.hs">1. Looking up geo information for IPv4 addresses <br /><small>Code: src/Chapter1.hs <a href="https://github.com/Akii/geoip-lookup/blob/master/src/Chapter1.hs" target="_blank"><i class="fa fa-github"></i></a></small></h2>
+<p>The first step is to implement querying the remote service. This is fairly straight forward with two libraries: <a href="https://hackage.haskell.org/package/aeson" target="_blank">aeson</a> and <a href="https://hackage.haskell.org/package/http-conduit" target="_blank">http-conduit</a>. First we define the data types. For convenience I simply derive the FromJSON instance.</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE DeriveAnyClass #-}</span>
+<span class="ot">{-# LANGUAGE DeriveGeneric  #-}</span>
+
+<span class="kw">import           </span><span class="dt">ClassyPrelude</span>
+<span class="kw">import           </span><span class="dt">Data.Aeson</span>
+<span class="kw">import           </span><span class="dt">Network.HTTP.Simple</span>
+
+<span class="co">-- | Represents an IP address like 172.217.22.46</span>
+<span class="kw">newtype</span> <span class="dt">IPAddress</span> <span class="fu">=</span> <span class="dt">IPAddress</span>
+  {<span class="ot"> getAddress ::</span> <span class="dt">String</span>
+  }
+
+<span class="co">-- | Allows us to write (&quot;172.217.22.46&quot; :: IPAddress)</span>
+<span class="kw">instance</span> <span class="dt">IsString</span> <span class="dt">IPAddress</span> <span class="kw">where</span>
+  fromString <span class="fu">=</span> <span class="dt">IPAddress</span>
+
+<span class="co">-- | Result of a GeoIP lookup. Record names match payload for convenient</span>
+<span class="co">--   JSON decoding.</span>
+<span class="kw">data</span> <span class="dt">LookupResult</span> <span class="fu">=</span> <span class="dt">LookupResult</span>
+  {<span class="ot"> country_code ::</span> <span class="dt">Text</span>
+  ,<span class="ot"> country_name ::</span> <span class="dt">Text</span>
+  } <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Generic</span>, <span class="dt">FromJSON</span>)</code></pre></div>
+<p>The library http-conduit offers a very simple HTTP client as shown below.</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- | Query the server and get a result. Throws an exception if anything fails.</span>
+<span class="ot">fetchGeoIP ::</span> <span class="dt">IPAddress</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> <span class="dt">LookupResult</span>
+fetchGeoIP ipAddr <span class="fu">=</span> <span class="kw">do</span>
+  req <span class="ot">&lt;-</span> parseRequest (<span class="st">&quot;http://freegeoip.net/json/&quot;</span> <span class="fu">&lt;&gt;</span> getAddress ipAddr)
+  getResponseBody <span class="fu">&lt;$&gt;</span> httpJSON req</code></pre></div>
+<p>And with that, we’re already done with the querying part! Pretty boring. Now let’s actually run it.</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">lookupOne ::</span> <span class="dt">IO</span> ()
+lookupOne <span class="fu">=</span> fetchGeoIP <span class="st">&quot;172.217.22.46&quot;</span> <span class="fu">&gt;&gt;=</span> print
+
+<span class="co">-- let it run in ghci</span>
+<span class="fu">&gt;</span> λ lookupOne
+<span class="fu">&gt;</span> <span class="dt">LookupResult</span> {country_code <span class="fu">=</span> <span class="st">&quot;US&quot;</span>, country_name <span class="fu">=</span> <span class="st">&quot;United States&quot;</span>}</code></pre></div>
+<p>Neat! There is just a tiny problem: It’s very slow. If we try to sequentially query a large amount of IP addresses things will naturally be very slow. And our goal is to make at least 50 lookups per second.</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- That module holds a list of IP addresses as [String]</span>
+<span class="kw">import </span><span class="dt">IPs</span>
+
+<span class="ot">lookupAll ::</span> <span class="dt">IO</span> ()
+lookupAll <span class="fu">=</span>
+  forM_ manyIPs <span class="fu">$</span> \ip <span class="ot">-&gt;</span> fetchGeoIP (<span class="dt">IPAddress</span> ip) <span class="fu">&gt;&gt;=</span> print
+
+<span class="co">-- let it run in ghci</span>
+<span class="fu">&gt;</span> λ lookupAll
+<span class="fu">&gt;</span> <span class="dt">LookupResult</span> {country_code <span class="fu">=</span> <span class="st">&quot;BR&quot;</span>, country_name <span class="fu">=</span> <span class="st">&quot;Brazil&quot;</span>}
+<span class="fu">&gt;</span> <span class="dt">LookupResult</span> {country_code <span class="fu">=</span> <span class="st">&quot;DE&quot;</span>, country_name <span class="fu">=</span> <span class="st">&quot;Germany&quot;</span>}
+<span class="fu">&gt;</span> <span class="dt">LookupResult</span> {country_code <span class="fu">=</span> <span class="st">&quot;ZM&quot;</span>, country_name <span class="fu">=</span> <span class="st">&quot;Zambia&quot;</span>}
+<span class="fu">&gt;</span> <span class="dt">LookupResult</span> {country_code <span class="fu">=</span> <span class="st">&quot;AU&quot;</span>, country_name <span class="fu">=</span> <span class="st">&quot;Australia&quot;</span>}
+<span class="fu">&gt;</span> <span class="fu">...</span></code></pre></div>
+<p>Without actually measuring performance, it’s a good estimation that this method can lookup around 4 IPs per second. It’s about time to distribute the work between multiple threads.</p>
+<h2 id="concurrently-looking-up-ips-code-srcchapter2.hs">2. Concurrently looking up IPs <br /><small>Code: src/Chapter2.hs <a href="https://github.com/Akii/geoip-lookup/blob/master/src/Chapter2.hs" target="_blank"><i class="fa fa-github"></i></a></small></h2>
+<p>There are many ways of performing IO actions concurrently or in parallel. Choosing the right method heavily depends on the use-case. I can highly recommend Simon Marlow’s book <a href="https://simonmar.github.io/pages/pcph.html" target="_blank">Parallel and Concurrent Programming in Haskell</a>, which is the de-facto standard literature on that subject.</p>
+<p>In my private project I had an event stream of IP addresses to look up. That made it impossible to concurrently map a static list. Additionally, I wasn’t sure how many IPs I would have to look up at a certain time and I didn’t want to have an unlimited amount of concurrent requests going out. Because of that I decided to use TQueue, a queue from the STM library (<a href="https://hackage.haskell.org/package/stm-2.4.5.0/docs/Control-Concurrent-STM-TQueue.html" target="_blank">TQueue on Hackage</a>) and have a fixed number of workers process the queue. So let’s start with the data types and API.</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">[<span class="dv">1</span>] <span class="kw">data</span> <span class="dt">GeoIPLookup</span>
+[<span class="dv">2</span>] <span class="kw">type</span> <span class="dt">JobResult</span> <span class="fu">=</span> <span class="dt">Either</span> <span class="dt">SomeException</span> <span class="dt">LookupResult</span>
+
+[<span class="dv">3</span>]<span class="ot"> mkGeoIPLookup ::</span> <span class="dt">Int</span> <span class="ot">-&gt;</span> (<span class="dt">IPAddress</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> <span class="dt">LookupResult</span>) <span class="ot">-&gt;</span> <span class="dt">IO</span> <span class="dt">GeoIPLookup</span>
+[<span class="dv">4</span>]<span class="ot"> lookupIP ::</span> <span class="dt">GeoIPLookup</span> <span class="ot">-&gt;</span> <span class="dt">IPAddress</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> (<span class="dt">Async</span> <span class="dt">JobResult</span>)
+[<span class="dv">5</span>]<span class="ot"> processQueue ::</span> <span class="dt">GeoIPLookup</span> <span class="ot">-&gt;</span> <span class="dt">Int</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> ()
+[<span class="dv">6</span>]<span class="ot"> worker ::</span> <span class="dt">GeoIPLookup</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> ()</code></pre></div>
+<ol style="list-style-type: decimal">
+<li>We’ll need some sort of data type holding the queue and lookup function.</li>
+<li>You probably already noticed that the function <code>fetchGeoIP</code>, that we wrote in chapter 1, is throwing exceptions. This means looking up geo IP information can fail. At some point we will need to handle this. There is the possibility to make <code>LookupResult</code> a sum type and include a failure case. I chose to use this representation instead.</li>
+<li>The idea behind this function is to have a way of creating a value of type <code>GeoIPLookup</code>. We already know we’re going to have a number of worker threads, so that is one argument. We also need a way of looking up IP information, that’s the second argument. Creating a new TQueue requires IO, thus the return type must be <code>IO GeoIPLookup</code>.</li>
+<li>This function will serve as our new way of looking up IPs. It will take a <code>GeoIPLookup</code> and <code>IPAddress</code> as argument and produce a value that will eventually hold the <code>JobResult</code>. So this function will insert the IP address into the queue and then offer a way of “waiting” until the lookup has been processed. This is encoded as <code>Async</code> from the library <a href="https://hackage.haskell.org/package/async">async</a>.</li>
+<li>By using the function <code>worker</code>, this function will create a number of worker threads.</li>
+<li>The definition of what a single worker will do.</li>
+</ol>
+<p>Let’s implement the functions starting with <code>lookupIP</code>. From our function definitions above, we can derive what the data type <code>GeoIPLookup</code> must look like. There is yet one thing to figure out: What the type of the TQueue is. Since all we can do is write to and read from the queue, there is no direct way of returning the lookup result. Remember, the workers will be asynchronously reading from the queue. The “trick” is to use a TVar:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">import </span><span class="dt">ClassyPrelude</span>
+<span class="kw">import </span><span class="dt">Chapter1</span>
+
+<span class="kw">type</span> <span class="dt">JobResult</span> <span class="fu">=</span> <span class="dt">Either</span> <span class="dt">SomeException</span> <span class="dt">LookupResult</span>
+
+<span class="kw">data</span> <span class="dt">GeoIPLookup</span> <span class="fu">=</span> <span class="dt">GeoIPLookup</span>
+  {<span class="ot"> ipLookup      ::</span> <span class="dt">IPAddress</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> <span class="dt">LookupResult</span>
+  ,<span class="ot"> ipLookupQueue ::</span> <span class="dt">TQueue</span> (<span class="dt">IPAddress</span>, <span class="dt">TVar</span> (<span class="dt">Maybe</span> <span class="dt">JobResult</span>))
+  }
+
+<span class="ot">lookupIP ::</span> <span class="dt">GeoIPLookup</span> <span class="ot">-&gt;</span> <span class="dt">IPAddress</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> (<span class="dt">Async</span> <span class="dt">JobResult</span>)
+lookupIP l ipAddr <span class="fu">=</span> async <span class="fu">$</span> <span class="kw">do</span>
+  var <span class="ot">&lt;-</span> newTVarIO <span class="dt">Nothing</span>
+  atomically <span class="fu">$</span> writeTQueue (ipLookupQueue l) (ipAddr, var)
+
+  atomically <span class="fu">$</span> <span class="kw">do</span>
+    done <span class="ot">&lt;-</span> readTVar var
+    <span class="kw">case</span> done <span class="kw">of</span>
+      <span class="dt">Nothing</span>  <span class="ot">-&gt;</span> retrySTM
+      <span class="dt">Just</span> res <span class="ot">-&gt;</span> return res</code></pre></div>
+<p>TVar and TQueue both come from the STM library. STM stands for software transactional memory and enables us to manipulate variables inside transactions (think: database transaction). Let me briefly explain the used functions. Consult Marlow’s book for a more detailed and complete STM introduction.</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">[<span class="dv">1</span>]<span class="ot"> atomically ::</span> <span class="dt">STM</span> a <span class="ot">-&gt;</span> <span class="dt">IO</span> a
+[<span class="dv">2</span>]<span class="ot"> newTVarIO ::</span> a <span class="ot">-&gt;</span> <span class="dt">IO</span> (<span class="dt">TVar</span> a)
+[<span class="dv">3</span>]<span class="ot"> writeTQueue ::</span> <span class="dt">TQueue</span> a <span class="ot">-&gt;</span> a <span class="ot">-&gt;</span> <span class="dt">STM</span> ()
+[<span class="dv">4</span>]<span class="ot"> readTVar ::</span> <span class="dt">TVar</span> a <span class="ot">-&gt;</span> <span class="dt">STM</span> a
+[<span class="dv">5</span>]<span class="ot"> retrySTM ::</span> <span class="dt">STM</span> a</code></pre></div>
+<ol style="list-style-type: decimal">
+<li>Executes an STM transaction inside IO.</li>
+<li>Creates a new TVar with the provided value as content. In the above code we create a new TVar with Nothing as value.</li>
+<li>Appends a new value to the end of the queue. Note that this is inside the STM monad, and therefore inside a transaction.</li>
+<li>Read the value of a TVar inside a transaction.</li>
+<li>Retries the transaction. Calling this function will abort the transaction and discard any changes made (like writing TVars or into TQueues). This is more useful than it looks on first sight. STM is smart enough to not infinitely retry the transaction. Instead it waits until actual changes have been made to the used variables and can detect deadlocks in case a state is unreachable.</li>
+</ol>
+<p>Let’s come back to our implementation:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">lookupIP ::</span> <span class="dt">GeoIPLookup</span> <span class="ot">-&gt;</span> <span class="dt">IPAddress</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> (<span class="dt">Async</span> <span class="dt">JobResult</span>)
+lookupIP l ipAddr <span class="fu">=</span> async <span class="fu">$</span> <span class="kw">do</span>
+  var <span class="ot">&lt;-</span> newTVarIO <span class="dt">Nothing</span>
+  atomically <span class="fu">$</span> writeTQueue (ipLookupQueue l) (ipAddr, var)
+
+  atomically <span class="fu">$</span> <span class="kw">do</span>
+    done <span class="ot">&lt;-</span> readTVar var
+    <span class="kw">case</span> done <span class="kw">of</span>
+      <span class="dt">Nothing</span>  <span class="ot">-&gt;</span> retrySTM
+      <span class="dt">Just</span> res <span class="ot">-&gt;</span> return res</code></pre></div>
+<p>There are two transactions going on here (three if you count newTVarIO). In the first transaction we write a tuple <code>(IPAddress, TVar)</code> to the queue. In the second we “watch” the value of the TVar. As long as the content of the variable is Nothing, we will retry the transaction. As soon as it has a value, we return. All of that happens inside a thread because of the <code>async</code> function in line 2. Eventually one of the workers will read from the queue, generate a <code>JobResult</code> and write it to the TVar. This will trigger STM and cause the transaction to be completed, fulfilling the Async.</p>
+<p>With the writing side being done, let’s implement the remaining functions.</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE RecordWildCards #-}</span>
+
+<span class="ot">mkGeoIPLookup ::</span> <span class="dt">Int</span> <span class="ot">-&gt;</span> (<span class="dt">IPAddress</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> <span class="dt">LookupResult</span>) <span class="ot">-&gt;</span> <span class="dt">IO</span> <span class="dt">GeoIPLookup</span>
+mkGeoIPLookup n f <span class="fu">=</span> <span class="kw">do</span>
+  glookup <span class="ot">&lt;-</span> <span class="dt">GeoIPLookup</span> <span class="fu">&lt;$&gt;</span> pure f <span class="fu">&lt;*&gt;</span> newTQueueIO
+  processQueue glookup n
+  return glookup
+
+<span class="ot">processQueue ::</span> <span class="dt">GeoIPLookup</span> <span class="ot">-&gt;</span> <span class="dt">Int</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> ()
+processQueue l n <span class="fu">=</span> replicateM_ n (worker l)
+
+<span class="ot">worker ::</span> <span class="dt">GeoIPLookup</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> ()
+worker <span class="dt">GeoIPLookup</span> {<span class="fu">..</span>} <span class="fu">=</span> void <span class="fu">.</span> fork <span class="fu">.</span> forever <span class="fu">$</span> <span class="kw">do</span>
+  (ipAddr, var) <span class="ot">&lt;-</span> atomically <span class="fu">$</span> readTQueue ipLookupQueue
+  res <span class="ot">&lt;-</span> try (ipLookup ipAddr)
+  atomically <span class="fu">$</span> writeTVar var (<span class="dt">Just</span> res)</code></pre></div>
+<p>Implementing <code>mkGeoIPLookup</code> is pretty much straight forward: Create the value and start processing the queue. <code>processQueue</code> simply replicates workers. A worker will forever read from the queue (and block if there are no entries in it), perform the lookup while catching any exceptions thrown, and write the result to the TVar. Using the language extension <code>RecordWildCards</code> we bring all record fields into scope (ipLookupQueue and ipLookup).</p>
+<p>With all that done we can now fetch geo IP information concurrently. In order to be able to properly see printed output, I use the package <code>concurrent-output</code>.</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">import </span><span class="dt">System.Console.Concurrent</span>
+<span class="kw">import </span><span class="dt">IPs</span>
+
+<span class="ot">lookupAll ::</span> <span class="dt">IO</span> ()
+lookupAll <span class="fu">=</span> <span class="kw">do</span>
+  glookup <span class="ot">&lt;-</span> mkGeoIPLookup <span class="dv">10</span> fetchGeoIP
+  withConcurrentOutput <span class="fu">.</span> forM_ manyIPs <span class="fu">$</span> \ip <span class="ot">-&gt;</span> <span class="kw">do</span>
+    as <span class="ot">&lt;-</span> lookupIP glookup (<span class="dt">IPAddress</span> ip)
+    void <span class="fu">.</span> fork <span class="fu">$</span> waitAsync as <span class="fu">&gt;&gt;=</span> outputConcurrent <span class="fu">.</span> mappend <span class="st">&quot;\n&quot;</span> <span class="fu">.</span> tshow
+
+<span class="co">-- let it run in ghci</span>
+<span class="fu">&gt;</span> λ lookupAll
+<span class="fu">&gt;</span> <span class="dt">Right</span> (<span class="dt">LookupResult</span> {country_code <span class="fu">=</span> <span class="st">&quot;ZM&quot;</span>, country_name <span class="fu">=</span> <span class="st">&quot;Zambia&quot;</span>})
+<span class="fu">&gt;</span> <span class="dt">Right</span> (<span class="dt">LookupResult</span> {country_code <span class="fu">=</span> <span class="st">&quot;BR&quot;</span>, country_name <span class="fu">=</span> <span class="st">&quot;Brazil&quot;</span>})
+<span class="fu">&gt;</span> <span class="dt">Right</span> (<span class="dt">LookupResult</span> {country_code <span class="fu">=</span> <span class="st">&quot;GB&quot;</span>, country_name <span class="fu">=</span> <span class="st">&quot;United Kingdom&quot;</span>})
+<span class="fu">&gt;</span> <span class="dt">Right</span> (<span class="dt">LookupResult</span> {country_code <span class="fu">=</span> <span class="st">&quot;AU&quot;</span>, country_name <span class="fu">=</span> <span class="st">&quot;Australia&quot;</span>})
+<span class="fu">&gt;</span> <span class="dt">Right</span> (<span class="dt">LookupResult</span> {country_code <span class="fu">=</span> <span class="st">&quot;US&quot;</span>, country_name <span class="fu">=</span> <span class="st">&quot;United States&quot;</span>})
+<span class="fu">&gt;</span> <span class="dt">Right</span> (<span class="dt">LookupResult</span> {country_code <span class="fu">=</span> <span class="st">&quot;SG&quot;</span>, country_name <span class="fu">=</span> <span class="st">&quot;Singapore&quot;</span>})
+<span class="fu">&gt;</span> <span class="dt">Right</span> (<span class="dt">LookupResult</span> {country_code <span class="fu">=</span> <span class="st">&quot;MU&quot;</span>, country_name <span class="fu">=</span> <span class="st">&quot;Mauritius&quot;</span>})
+<span class="fu">&gt;</span> <span class="dt">Right</span> (<span class="dt">LookupResult</span> {country_code <span class="fu">=</span> <span class="st">&quot;US&quot;</span>, country_name <span class="fu">=</span> <span class="st">&quot;United States&quot;</span>})
+<span class="fu">&gt;</span> <span class="fu">...</span> really fast this time, because concurrent<span class="fu">!</span></code></pre></div>
+<h2 id="summary">Summary</h2>
+<p>In part 1 of this series about implementing an efficient GeoIP lookup we implemented the HTTP client for the remote service. Then we made looking up IPs fast by using concurrency and STM. In the next part we will be implementing a cache and request collapsing so that each IP is looked up exactly once. Furthermore we will try to abstract this implementation to work with any IO action.</p>
+<p>As a reminder, the GitHub repository containing the code can be found <a href="https://github.com/Akii/geoip-lookup" target="_blank">here</a>. If you have questions or suggestions please feel free to leave them in the comment section below.</p>
+</div>
+
+
+<div class="section-container">
+    <h4 class="section-title"><span>All Comments</span></h4>
+    <div id="disqus_thread"></div>
+</div>
+<script>
+    var disqus_config = function () {
+        this.page.url = window.location.protocol + "//" + window.location.host + "/posts/2018-02-19-geoip-lookup-part-1.html";
+        this.page.identifier = "post-2";
+    };
+    (function() {
+        var d = document, s = d.createElement('script');
+        s.src = 'https://boring-haskell.disqus.com/embed.js';
+        s.setAttribute('data-timestamp', +new Date());
+        (d.head || d.body).appendChild(s);
+    })();
+</script>
+
+			              </div>
+			              <div class="col-md-3">
+				                <div class="section-container">
+					                  <h4 class="section-title"><span>Follow me</span></h4>
+					                  <ul class="sidebar-social-list">
+						                    <li><a href="https://twitter.com/AkiiZedd"><i class="fa fa-twitter"></i></a></li>
+						                    <li><a href="https://github.com/Akii"><i class="fa fa-github"></i></a></li>
+						                    <li><a href="https://www.xing.com/profile/Philipp_Maier65"><i class="fa fa-xing"></i></a></li>
+					                  </ul>
+                        </div>
+			              </div>
+		            </div>
+	          </div>
+        </div>
+
+        <div id="footer-copyright" class="footer-copyright">
+	          <div class="container">
+		            &copy; 2017 Philipp Maier
+		            <span class="pull-right">Site proudly generated by <a href="http://jaspervdj.be/hakyll">Hakyll</a></span>
+	          </div>
+        </div>
+    </body>
+</html>
